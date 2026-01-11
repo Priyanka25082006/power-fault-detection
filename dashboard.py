@@ -11,7 +11,52 @@ import warnings
 import winsound
 import threading
 import time
+import os
+# <-- Add if missing
+# ========== CLOUD-READY FUNCTIONS ==========
 
+def ensure_data_exists():
+    """Create data folder and sample data if missing"""
+    data_path = 'data/power_line_data.csv'
+
+    # Create data folder if it doesn't exist
+    os.makedirs('data', exist_ok=True)
+
+    if not os.path.exists(data_path):
+        try:
+            from create_dataset import create_sample_data
+            create_sample_data()
+            st.success("✅ Sample data created successfully!")
+        except:
+            # Create minimal data if import fails
+            df = pd.DataFrame({
+                'timestamp': range(1000),
+                'current_phase_A': 100 + 10 * np.random.randn(1000),
+                'voltage_phase_A': 220 + 5 * np.random.randn(1000),
+                'is_fault': np.random.choice([0, 1], 1000, p=[0.95, 0.05])
+            })
+            df.to_csv(data_path, index=False)
+            st.info("📊 Created minimal sample data")
+
+
+def ensure_models_exist():
+    """Create models folder if missing"""
+    os.makedirs('models', exist_ok=True)
+
+    # You can add model creation logic here if needed
+    # Or your existing code will handle it
+    pass
+
+
+def load_model_safely():
+    """Load model with error handling"""
+    try:
+        model = joblib.load('models/fault_detection_model.pkl')
+        scaler = joblib.load('models/scaler.pkl')
+        return model, scaler
+    except:
+        st.warning("⚠️ Models not found. Running in simulation mode.")
+        return None, None
 # ==================== SOUND ALERT FUNCTION ====================
 def play_alert_sound(fault_type="general"):
     """Play different sounds based on fault severity"""
@@ -432,7 +477,36 @@ def main():
         # Check if we should stop (for demo purposes)
         # In production, this would run continuously
         # simulation_active = False  # Uncomment to run once for testing
-
-
 if __name__ == "__main__":
+    # ========== CLOUD SETUP ==========
+    # Create necessary folders for cloud deployment
+    import os
+
+    os.makedirs('data', exist_ok=True)
+    os.makedirs('models', exist_ok=True)
+    os.makedirs('logs', exist_ok=True)
+
+    # Check if data exists, create if missing
+    if not os.path.exists('data/power_line_data.csv'):
+        print("📊 Setting up for first run...")
+        try:
+            # Try to import your data generator
+            from create_dataset import create_sample_data
+            create_sample_data()
+        except Exception as e:
+            print(f"⚠️ Could not import create_dataset: {e}")
+            # Create minimal data if import fails
+            import pandas as pd
+            import numpy as np
+
+            df = pd.DataFrame({
+                'timestamp': range(1000),
+                'current_phase_A': 100 + 10 * np.random.randn(1000),
+                'voltage_phase_A': 220 + 5 * np.random.randn(1000),
+                'is_fault': np.random.choice([0, 1], 1000, p=[0.95, 0.05])
+            })
+            df.to_csv('data/power_line_data.csv', index=False)
+            print("✅ Created minimal dataset")
+
+    # ========== START DASHBOARD ==========
     main()
