@@ -10,9 +10,7 @@ from plotly.subplots import make_subplots
 import warnings
 import winsound
 import threading
-import time
 import os
-# <-- Add if missing
 # ========== CLOUD-READY FUNCTIONS ==========
 
 def ensure_data_exists():
@@ -42,9 +40,6 @@ def ensure_data_exists():
 def ensure_models_exist():
     """Create models folder if missing"""
     os.makedirs('models', exist_ok=True)
-
-    # You can add model creation logic here if needed
-    # Or your existing code will handle it
     pass
 
 
@@ -57,6 +52,8 @@ def load_model_safely():
     except:
         st.warning("⚠️ Models not found. Running in simulation mode.")
         return None, None
+
+
 # ==================== SOUND ALERT FUNCTION ====================
 def play_alert_sound(fault_type="general"):
     """Play different sounds based on fault severity"""
@@ -70,9 +67,45 @@ def play_alert_sound(fault_type="general"):
             # Single beep for minor faults
             winsound.Beep(1000, 1000)  # Frequency: 1000Hz, Duration: 1000ms
     except:
-        pass  # Silently fail if sound doesn't work (e.g., on Mac/Linux)
+        pass  # Silently fail if sound doesn't work
 
-# ==================== END SOUND FUNCTION ====================
+
+# ==================== DEBUG FUNCTIONS ====================
+def load_training_stats():
+    """Load and display training data statistics"""
+    try:
+        df = pd.read_csv('data/power_line_data.csv')
+
+        # Calculate statistics
+        fault_data = df[df['is_fault'] == 1]
+        normal_data = df[df['is_fault'] == 0]
+
+        stats = {
+            'fault_current_mean': fault_data['current_phase_A'].mean() if len(fault_data) > 0 else 0,
+            'fault_voltage_mean': fault_data['voltage_phase_A'].mean() if len(fault_data) > 0 else 0,
+            'normal_current_mean': normal_data['current_phase_A'].mean() if len(normal_data) > 0 else 0,
+            'normal_voltage_mean': normal_data['voltage_phase_A'].mean() if len(normal_data) > 0 else 0,
+            'total_faults': len(fault_data),
+            'total_normal': len(normal_data)
+        }
+        return stats
+    except:
+        return None
+
+
+def threshold_detection(current, voltage):
+    """Simple rule-based fault detection"""
+    if current > 250:  # High current threshold
+        return True, "OVERCURRENT (>250A)"
+    elif voltage < 180:  # Low voltage threshold
+        return True, "UNDERVOLTAGE (<180V)"
+    elif current * voltage > 50000:  # High power
+        return True, "OVERPOWER (>50kW)"
+    elif voltage / (current + 0.001) < 0.5:  # Low impedance
+        return True, "LOW IMPEDANCE"
+    return False, "NORMAL"
+
+
 warnings.filterwarnings('ignore')
 
 # Page configuration
@@ -122,6 +155,13 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
     }
+    .debug-info {
+        background-color: #FEF3C7;
+        border: 1px solid #F59E0B;
+        padding: 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.8rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -144,24 +184,25 @@ def generate_live_data(include_fault=False, fault_duration=60):
     n_samples = 500
     t = np.linspace(0, 50, n_samples)
 
-    # Base signals
+    # Base signals - NORMAL OPERATION
     current_base = 100 + 15 * np.sin(t / 2) + np.random.normal(0, 5, n_samples)
     voltage_base = 220 + 10 * np.sin(t / 3) + np.random.normal(0, 3, n_samples)
 
     if include_fault:
-        # Create fault in the middle
+        # Create fault in the middle - REALISTIC FAULT PATTERNS
         fault_start = n_samples // 3
         fault_end = fault_start + fault_duration
 
-        # Modify signals during fault
-        current_base[fault_start:fault_end] = (
-                350 + 100 * np.sin(t[fault_start:fault_end] / 5) +
-                np.random.normal(0, 50, fault_end - fault_start)
-        )
-        voltage_base[fault_start:fault_end] = (
-                80 + 40 * np.sin(t[fault_start:fault_end] / 5) +
-                np.random.normal(0, 25, fault_end - fault_start)
-        )
+        # REAL FAULT VALUES (not random)
+        # During fault: High current (250-400A), Low voltage (80-150V)
+        fault_current = 350 + 100 * np.sin(t[fault_start:fault_end] / 5) + np.random.normal(0, 30,
+                                                                                            fault_end - fault_start)
+        fault_voltage = 80 + 40 * np.sin(t[fault_start:fault_end] / 5) + np.random.normal(0, 20,
+                                                                                          fault_end - fault_start)
+
+        # Apply fault
+        current_base[fault_start:fault_end] = fault_current
+        voltage_base[fault_start:fault_end] = fault_voltage
 
         is_fault = np.zeros(n_samples)
         is_fault[fault_start:fault_end] = 1
@@ -179,6 +220,29 @@ def generate_live_data(include_fault=False, fault_duration=60):
         'power': power,
         'impedance': impedance,
         'is_fault': is_fault
+    }
+
+
+# Function to generate SINGLE data point for ML prediction
+def generate_single_point(include_fault=False):
+    """Generate a single data point for ML prediction"""
+    if include_fault:
+        # REAL FAULT VALUES that match training data
+        current = np.random.uniform(300, 400)  # 300-400A
+        voltage = np.random.uniform(70, 120)  # 70-120V
+    else:
+        # NORMAL VALUES
+        current = 100 + np.random.normal(0, 10)  # ~100A
+        voltage = 220 + np.random.normal(0, 5)  # ~220V
+
+    power = current * voltage
+    impedance = voltage / (current + 0.001)
+
+    return {
+        'current': current,
+        'voltage': voltage,
+        'power': power,
+        'impedance': impedance
     }
 
 
@@ -206,27 +270,75 @@ def main():
         st.markdown("#### Simulation Mode")
         simulation_mode = st.selectbox(
             "Select Simulation Mode",
-            ["Normal Operation", "Random Faults", "Manual Fault Control"]
+            ["Normal Operation", "Random Faults", "Manual Fault Control", "TEST: Force Fault Values"]
         )
 
         # Fault probability slider
         if simulation_mode == "Random Faults":
-            fault_probability = st.slider("Fault Probability (%)", 0, 100, 10)
-        else:
-            fault_probability = 0
+            fault_probability = st.slider("Fault Probability (%)", 0, 100, 30)  # Increased default
 
         # Manual fault control
         if simulation_mode == "Manual Fault Control":
-            trigger_fault = st.button("🔴 Trigger Fault Now", type="primary", use_container_width=True)
-            clear_fault = st.button("🟢 Clear Fault", use_container_width=True)
+            col1, col2 = st.columns(2)
+            with col1:
+                trigger_fault = st.button("🔴 Trigger Fault", type="primary", use_container_width=True)
+            with col2:
+                clear_fault = st.button("🟢 Clear Fault", use_container_width=True)
         else:
             trigger_fault = False
             clear_fault = False
+
+        # TEST MODE: Force specific values
+        if simulation_mode == "TEST: Force Fault Values":
+            st.markdown("#### 🧪 Test Values")
+            test_current = st.slider("Test Current (A)", 50, 500, 350)
+            test_voltage = st.slider("Test Voltage (V)", 50, 300, 80)
+            test_power = test_current * test_voltage
+            test_impedance = test_voltage / (test_current + 0.001)
+            st.write(f"Power: {test_power:.1f}W")
+            st.write(f"Impedance: {test_impedance:.2f}Ω")
 
         # Display settings
         st.markdown("#### Display Settings")
         chart_speed = st.slider("Chart Update Speed (seconds)", 1, 10, 3)
         samples_to_display = st.slider("Samples to Display", 100, 1000, 500)
+
+        # ========== DEBUG SECTION ==========
+        st.markdown("---")
+        st.markdown("### 🔍 DEBUG & TESTING")
+
+        # Load training stats
+        stats = load_training_stats()
+        if stats:
+            st.markdown("#### Training Data Stats")
+            st.write(f"Fault Current Avg: {stats['fault_current_mean']:.1f}A")
+            st.write(f"Fault Voltage Avg: {stats['fault_voltage_mean']:.1f}V")
+            st.write(f"Normal Current Avg: {stats['normal_current_mean']:.1f}A")
+            st.write(f"Normal Voltage Avg: {stats['normal_voltage_mean']:.1f}V")
+            st.write(f"Total Faults in Data: {stats['total_faults']}")
+            st.write(f"Total Normal in Data: {stats['total_normal']}")
+
+        # Test buttons
+        st.markdown("#### Test Buttons")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Test Normal Values"):
+                test_features = np.array([[100, 220, 22000, 2.2]])
+                test_scaled = scaler.transform(test_features)
+                test_pred = model.predict(test_scaled)[0]
+                test_prob = model.predict_proba(test_scaled)[0][1]
+                st.write(f"Result: {'FAULT' if test_pred == 1 else 'NORMAL'}")
+                st.write(f"Confidence: {test_prob:.2%}")
+
+        with col2:
+            if st.button("Test Fault Values"):
+                test_features = np.array([[350, 80, 28000, 0.23]])
+                test_scaled = scaler.transform(test_features)
+                test_pred = model.predict(test_scaled)[0]
+                test_prob = model.predict_proba(test_scaled)[0][1]
+                st.write(f"Result: {'FAULT' if test_pred == 1 else 'NORMAL'}")
+                st.write(f"Confidence: {test_prob:.2%}")
 
         # Model info
         st.markdown("---")
@@ -267,33 +379,55 @@ def main():
         st.session_state.fault_count = 0
     if 'normal_count' not in st.session_state:
         st.session_state.normal_count = 0
+    if 'fault_triggered' not in st.session_state:
+        st.session_state.fault_triggered = False
 
     # Main simulation loop
     simulation_active = True
-    fault_triggered = False
 
     while simulation_active:
         # Determine if we should generate a fault
         if simulation_mode == "Manual Fault Control":
-            if trigger_fault and not fault_triggered:
-                fault_triggered = True
+            if trigger_fault:
+                st.session_state.fault_triggered = True
             if clear_fault:
-                fault_triggered = False
-            generate_fault = fault_triggered
+                st.session_state.fault_triggered = False
+            generate_fault = st.session_state.fault_triggered
         elif simulation_mode == "Random Faults":
             generate_fault = np.random.rand() < (fault_probability / 100)
+        elif simulation_mode == "TEST: Force Fault Values":
+            generate_fault = True
+            # Use forced test values
+            data_point = {
+                'current': test_current,
+                'voltage': test_voltage,
+                'power': test_power,
+                'impedance': test_impedance
+            }
         else:
             generate_fault = False
 
         # Generate data
-        data = generate_live_data(include_fault=generate_fault)
+        if simulation_mode == "TEST: Force Fault Values":
+            # Use forced values
+            current_val = test_current
+            voltage_val = test_voltage
+            power_val = test_power
+            impedance_val = test_impedance
+        else:
+            # Generate single point for ML prediction
+            data_point = generate_single_point(include_fault=generate_fault)
+            current_val = data_point['current']
+            voltage_val = data_point['voltage']
+            power_val = data_point['power']
+            impedance_val = data_point['impedance']
 
         # Prepare features for prediction
         features = np.array([
-            data['current'][-1],
-            data['voltage'][-1],
-            data['power'][-1],
-            data['impedance'][-1]
+            current_val,
+            voltage_val,
+            power_val,
+            impedance_val
         ]).reshape(1, -1)
 
         # Scale features
@@ -303,14 +437,30 @@ def main():
         prediction = model.predict(features_scaled)[0]
         probability = model.predict_proba(features_scaled)[0][1]
 
+        # Also use threshold detection
+        threshold_fault, threshold_reason = threshold_detection(current_val, voltage_val)
+
+        # Determine final fault status
+        # Use ML prediction OR threshold detection (whichever says fault)
+        is_fault = (prediction == 1) or threshold_fault
+
         # Update counters
-        if prediction == 1:
+        if is_fault:
             st.session_state.fault_count += 1
             # Log fault if it's new
             current_time = datetime.now().strftime("%H:%M:%S")
             if len(st.session_state.fault_log) == 0 or not st.session_state.fault_log[-1].startswith("🔴"):
-                log_entry = f"🔴 Fault detected at {current_time} (Confidence: {probability:.2%})"
+                if prediction == 1:
+                    log_entry = f"🔴 ML Fault at {current_time} ({probability:.1%})"
+                else:
+                    log_entry = f"⚠️ Threshold Fault at {current_time} ({threshold_reason})"
                 st.session_state.fault_log.append(log_entry)
+
+                # Play sound alert
+                try:
+                    threading.Thread(target=play_alert_sound, args=("critical",)).start()
+                except:
+                    pass
         else:
             st.session_state.normal_count += 1
 
@@ -320,7 +470,7 @@ def main():
                 st.markdown(f"""
                 <div class="metric-card">
                     <h3 style="margin:0; color:#3B82F6;">Current</h3>
-                    <p style="font-size: 1.8rem; margin:0.5rem 0; font-weight:bold;">{data['current'][-1]:.1f} A</p>
+                    <p style="font-size: 1.8rem; margin:0.5rem 0; font-weight:bold;">{current_val:.1f} A</p>
                     <p style="margin:0; color:#6B7280;">Phase A</p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -329,19 +479,22 @@ def main():
                 st.markdown(f"""
                 <div class="metric-card">
                     <h3 style="margin:0; color:#10B981;">Voltage</h3>
-                    <p style="font-size: 1.8rem; margin:0.5rem 0; font-weight:bold;">{data['voltage'][-1]:.1f} V</p>
+                    <p style="font-size: 1.8rem; margin:0.5rem 0; font-weight:bold;">{voltage_val:.1f} V</p>
                     <p style="margin:0; color:#6B7280;">Phase A</p>
                 </div>
                 """, unsafe_allow_html=True)
 
             with metric3.container():
-                fault_color = "#EF4444" if prediction == 1 else "#10B981"
-                fault_text = "FAULT DETECTED" if prediction == 1 else "SYSTEM NORMAL"
+                fault_color = "#EF4444" if is_fault else "#10B981"
+                fault_text = "FAULT DETECTED" if is_fault else "SYSTEM NORMAL"
+                detection_source = "ML" if prediction == 1 else "Threshold" if threshold_fault else "Normal"
+
                 st.markdown(f"""
                 <div class="metric-card">
                     <h3 style="margin:0; color:{fault_color};">Status</h3>
                     <p style="font-size: 1.8rem; margin:0.5rem 0; font-weight:bold;">{fault_text}</p>
-                    <p style="margin:0; color:#6B7280;">Confidence: {probability:.2%}</p>
+                    <p style="margin:0; color:#6B7280;">Source: {detection_source}</p>
+                    <p style="margin:0; color:#6B7280;">ML Confidence: {probability:.2%}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -349,18 +502,23 @@ def main():
                 st.markdown(f"""
                 <div class="metric-card">
                     <h3 style="margin:0; color:#8B5CF6;">Power</h3>
-                    <p style="font-size: 1.8rem; margin:0.5rem 0; font-weight:bold;">{data['power'][-1]:.1f} kW</p>
+                    <p style="font-size: 1.8rem; margin:0.5rem 0; font-weight:bold;">{power_val / 1000:.1f} kW</p>
                     <p style="margin:0; color:#6B7280;">Active Power</p>
                 </div>
                 """, unsafe_allow_html=True)
 
         # Update status display
         with col1:
-            if prediction == 1:
+            if is_fault:
+                if prediction == 1:
+                    alert_text = f"🚨 ML DETECTED FAULT! (Confidence: {probability:.2%})"
+                else:
+                    alert_text = f"⚠️ THRESHOLD DETECTED: {threshold_reason}"
+
                 status_placeholder.markdown(f"""
                 <div class="fault-alert">
-                    <h2 style="color:#DC2626; margin:0;">🚨 FAULT ALERT!</h2>
-                    <p style="margin:0.5rem 0;">High probability of fault detected in power line.</p>
+                    <h2 style="color:#DC2626; margin:0;">{alert_text}</h2>
+                    <p style="margin:0.5rem 0;">Current: {current_val:.1f}A, Voltage: {voltage_val:.1f}V</p>
                     <p style="margin:0;">Recommended action: Dispatch maintenance team.</p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -369,8 +527,12 @@ def main():
                 <div class="normal-status">
                     <h2 style="color:#10B981; margin:0;">✅ SYSTEM NORMAL</h2>
                     <p style="margin:0.5rem 0;">All parameters within safe operating limits.</p>
+                    <p style="margin:0;">ML Confidence: {probability:.2%}</p>
                 </div>
                 """, unsafe_allow_html=True)
+
+        # Generate chart data (for visualization only)
+        chart_data = generate_live_data(include_fault=generate_fault)
 
         # Update charts
         fig = make_subplots(
@@ -383,8 +545,8 @@ def main():
 
         # Add traces
         fig.add_trace(
-            go.Scatter(x=data['time'][-samples_to_display:],
-                       y=data['current'][-samples_to_display:],
+            go.Scatter(x=chart_data['time'][-samples_to_display:],
+                       y=chart_data['current'][-samples_to_display:],
                        mode='lines',
                        name='Current',
                        line=dict(color='#3B82F6', width=2)),
@@ -392,8 +554,8 @@ def main():
         )
 
         fig.add_trace(
-            go.Scatter(x=data['time'][-samples_to_display:],
-                       y=data['voltage'][-samples_to_display:],
+            go.Scatter(x=chart_data['time'][-samples_to_display:],
+                       y=chart_data['voltage'][-samples_to_display:],
                        mode='lines',
                        name='Voltage',
                        line=dict(color='#10B981', width=2)),
@@ -401,8 +563,8 @@ def main():
         )
 
         fig.add_trace(
-            go.Scatter(x=data['time'][-samples_to_display:],
-                       y=data['power'][-samples_to_display:],
+            go.Scatter(x=chart_data['time'][-samples_to_display:],
+                       y=chart_data['power'][-samples_to_display:] / 1000,  # Convert to kW
                        mode='lines',
                        name='Power',
                        line=dict(color='#8B5CF6', width=2)),
@@ -410,8 +572,8 @@ def main():
         )
 
         fig.add_trace(
-            go.Scatter(x=data['time'][-samples_to_display:],
-                       y=data['impedance'][-samples_to_display:],
+            go.Scatter(x=chart_data['time'][-samples_to_display:],
+                       y=chart_data['impedance'][-samples_to_display:],
                        mode='lines',
                        name='Impedance',
                        line=dict(color='#F59E0B', width=2)),
@@ -419,10 +581,10 @@ def main():
         )
 
         # Highlight fault regions if present
-        if any(data['is_fault'][-samples_to_display:]):
-            fault_indices = np.where(data['is_fault'][-samples_to_display:] == 1)[0]
+        if any(chart_data['is_fault'][-samples_to_display:]):
+            fault_indices = np.where(chart_data['is_fault'][-samples_to_display:] == 1)[0]
             if len(fault_indices) > 0:
-                fault_times = data['time'][-samples_to_display:][fault_indices]
+                fault_times = chart_data['time'][-samples_to_display:][fault_indices]
                 for i in range(4):
                     fig.add_vrect(
                         x0=fault_times[0], x1=fault_times[-1],
@@ -465,18 +627,43 @@ def main():
                 total_samples = st.session_state.fault_count + st.session_state.normal_count
                 if total_samples > 0:
                     fault_percentage = (st.session_state.fault_count / total_samples) * 100
-                    st.metric("Total Faults Detected", st.session_state.fault_count)
-                    st.metric("Fault Detection Rate", f"{fault_percentage:.2f}%")
-                    st.metric("System Uptime", f"{(st.session_state.normal_count / total_samples * 100):.1f}%")
+
+                    # Show BOTH ML and total detection
+                    col_stat1, col_stat2 = st.columns(2)
+
+                    with col_stat1:
+                        st.metric("Total Readings", total_samples)
+                        st.metric("Fault Detection Rate", f"{fault_percentage:.1f}%")
+
+                    with col_stat2:
+                        st.metric("Current Values", f"{current_val:.0f}A / {voltage_val:.0f}V")
+                        st.metric("ML Confidence", f"{probability:.1%}")
                 else:
                     st.info("Waiting for data...")
+
+        # Debug info in expander
+        with st.sidebar:
+            with st.expander("📊 Current Debug Info", expanded=False):
+                st.markdown(f"""
+                <div class="debug-info">
+                <strong>Current Values:</strong><br>
+                • Current: {current_val:.1f}A<br>
+                • Voltage: {voltage_val:.1f}V<br>
+                • Power: {power_val / 1000:.1f}kW<br>
+                • Impedance: {impedance_val:.2f}Ω<br><br>
+
+                <strong>Detection Results:</strong><br>
+                • ML Prediction: {'FAULT' if prediction == 1 else 'NORMAL'}<br>
+                • ML Confidence: {probability:.2%}<br>
+                • Threshold Detection: {threshold_reason}<br>
+                • Final Decision: {'FAULT' if is_fault else 'NORMAL'}
+                </div>
+                """, unsafe_allow_html=True)
 
         # Wait before next update
         time.sleep(chart_speed)
 
-        # Check if we should stop (for demo purposes)
-        # In production, this would run continuously
-        # simulation_active = False  # Uncomment to run once for testing
+
 if __name__ == "__main__":
     # ========== CLOUD SETUP ==========
     # Create necessary folders for cloud deployment
@@ -492,6 +679,7 @@ if __name__ == "__main__":
         try:
             # Try to import your data generator
             from create_dataset import create_sample_data
+
             create_sample_data()
         except Exception as e:
             print(f"⚠️ Could not import create_dataset: {e}")
@@ -503,7 +691,7 @@ if __name__ == "__main__":
                 'timestamp': range(1000),
                 'current_phase_A': 100 + 10 * np.random.randn(1000),
                 'voltage_phase_A': 220 + 5 * np.random.randn(1000),
-                'is_fault': np.random.choice([0, 1], 1000, p=[0.95, 0.05])
+                'is_fault': np.random.choice([0, 1], 1000, p=[0.85, 0.15])  # More faults for testing
             })
             df.to_csv('data/power_line_data.csv', index=False)
             print("✅ Created minimal dataset")
