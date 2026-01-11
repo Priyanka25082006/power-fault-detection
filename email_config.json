@@ -1,0 +1,10 @@
+{
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "priyanece08@gmail.com",
+    "sender_password": "kppwgbvmxxpcrvxz",
+    "recipients": ["admin@utility.com", "engineer@utility.com"],
+    "alert_cooldown_minutes": 5,
+    "send_for_critical_only": true,
+    "critical_threshold": 0.9
+}
